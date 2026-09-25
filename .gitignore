@@ -1,0 +1,43 @@
+# Dataset
+dataset/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Environment & secrets
+.env
+.env.*
+
+# ML / experiment artifacts
+runs/
+wandb/
+mlruns/
+checkpoints/
+*.ckpt
+*.pth
+*.pt
+
+# Logs / temporary files
+*.log
+*.tmp
+tmp/
