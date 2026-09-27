@@ -126,10 +126,19 @@ def extract_features_chunked(
     s1_lookup: Dict[str, Tuple[str, str]],
     pool_lookup: Dict[str, Tuple[str, str]],
     chunk_size: int = BATCH_FEAT_SIZE,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Extract features for all pairs in chunks, returning (X, y)."""
-    Xs: List[np.ndarray] = []
-    ys: List[np.ndarray] = []
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract features for all pairs in chunks.
+
+    Returns
+    -------
+    X            : float32 array (n_valid, n_features)
+    y            : int8 array   (n_valid,)  – empty if pairs_df has no 'label'
+    valid_indices: int64 array  (n_valid,)  – positional row-indices in pairs_df
+                   that had successful lookups; use to re-align pairs_df with X.
+    """
+    Xs: List[np.ndarray]  = []
+    ys: List[np.ndarray]  = []
+    valid_idx: List[int]  = []
     has_label = "label" in pairs_df.columns
     n_total   = len(pairs_df)
 
@@ -137,8 +146,9 @@ def extract_features_chunked(
         chunk = pairs_df.iloc[start : start + chunk_size]
         rows  = []
         lbls  = []
+        chunk_valid: List[int] = []
 
-        for _, row in chunk.iterrows():
+        for pos, (_, row) in enumerate(chunk.iterrows()):
             s1_id   = row["source1_entity_id"]
             cand_id = row["candidate_entity_id"]
             s1e     = s1_lookup.get(s1_id)
@@ -153,11 +163,13 @@ def extract_features_chunked(
                 cand_id,
             )
             rows.append(feat)
+            chunk_valid.append(start + pos)
             if has_label:
                 lbls.append(int(row["label"]))
 
         if rows:
             Xs.append(np.vstack(rows))
+            valid_idx.extend(chunk_valid)
             if has_label:
                 ys.append(np.array(lbls, dtype=np.int8))
 
@@ -167,7 +179,7 @@ def extract_features_chunked(
 
     X = np.vstack(Xs) if Xs else np.empty((0, len(FEATURE_NAMES)), dtype=np.float32)
     y = np.concatenate(ys) if ys else np.array([], dtype=np.int8)
-    return X, y
+    return X, y, np.array(valid_idx, dtype=np.int64)
 
 
 # ---------------------------------------------------------------------------
@@ -280,10 +292,9 @@ def main() -> None:
           f"negatives: {(pairs_train['label']==0).sum():,})")
 
     # ---------------------------------------------------------- val pairs
-    cand_val_path = OUTPUT_DIR / "candidate_pairs_train.tsv"
     print(f"\n  Loading val candidate pairs …")
     pairs_val_raw = candidate_tsv_to_pairs(cand_train_path, gt=gt_val)
-    pairs_val     = pairs_val_raw[pairs_val_raw["source1_entity_id"].isin(val_ids)]
+    pairs_val     = pairs_val_raw[pairs_val_raw["source1_entity_id"].isin(val_ids)].reset_index(drop=True)
     print(f"  Val pairs   : {len(pairs_val):,}  "
           f"(positives: {pairs_val['label'].sum():,})")
 
@@ -291,16 +302,20 @@ def main() -> None:
     print(f"\n{divider}")
     print("  EXTRACTING FEATURES — Train split")
     print(divider)
-    X_train, y_train = extract_features_chunked(pairs_train, s1_lookup, pool_lookup)
+    X_train, y_train, _train_valid_idx = extract_features_chunked(pairs_train, s1_lookup, pool_lookup)
     print(f"  X_train shape: {X_train.shape}  positives: {y_train.sum():,}")
 
     print(f"\n{divider}")
     print("  EXTRACTING FEATURES — Val split")
     print(divider)
-    X_val, y_val = extract_features_chunked(pairs_val, s1_lookup, pool_lookup)
-    # Trim pairs_val to match valid rows extracted
-    # (pairs where both entities found in lookup)
-    valid_mask_val = np.ones(len(X_val), dtype=bool)  # all valid here since we prefiltered
+    X_val, y_val, val_valid_idx = extract_features_chunked(pairs_val, s1_lookup, pool_lookup)
+    # Align pairs_val to exactly the rows that had successful lookups.
+    # val_valid_idx contains positional indices into pairs_val (reset_index above
+    # ensures iloc positions match logical positions).
+    pairs_val_valid = pairs_val.iloc[val_valid_idx].reset_index(drop=True)
+    n_skipped_val = len(pairs_val) - len(pairs_val_valid)
+    if n_skipped_val > 0:
+        print(f"  ⚠  Val pairs skipped (entity not in lookup): {n_skipped_val:,}")
     print(f"  X_val shape  : {X_val.shape}  positives: {y_val.sum():,}")
 
     # ----------------------------------------------------------------- train
@@ -345,9 +360,9 @@ def main() -> None:
     print("  THRESHOLD SWEEP ON VALIDATION SET")
     print(divider)
 
-    # Rebuild pairs_val aligned to valid extracted rows
+    # pairs_val_valid is already aligned row-for-row with X_val (same valid_idx filter).
     best_thresh, sweep_df = threshold_sweep(
-        model, X_val, pairs_val.iloc[:len(X_val)].reset_index(drop=True),
+        model, X_val, pairs_val_valid,
         gt_val, gt_full, val_ids,
     )
 

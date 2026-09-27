@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import gc
 import os
 import subprocess
 import sys
@@ -373,6 +372,14 @@ def main() -> None:
 
     matching_path = OUTPUT_DIR / "matching_results.tsv"
     write_matching_tsv(matches, s1_ids_ordered, matching_path)
+
+    # Also sync to ROOT output/ directory
+    ROOT_OUTPUT = ROOT / "output"
+    ROOT_OUTPUT.mkdir(parents=True, exist_ok=True)
+    import shutil
+    shutil.copy2(matching_path, ROOT_OUTPUT / "matching_results.tsv")
+    shutil.copy2(candidate_path, ROOT_OUTPUT / "candidate_pairs.tsv")
+    print(f"  Synced outputs → output/ matching_results.tsv & candidate_pairs.tsv", flush=True)
 
     # Stats
     n_matched   = sum(1 for v in matches.values() if v)

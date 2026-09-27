@@ -146,6 +146,7 @@ class CountryIndex:
         X = self.vec.fit_transform(names)
         # L2-normalise so dot product == cosine similarity
         self.X = sk_normalize(X, norm="l2", copy=False)
+        self.X_T = self.X.T.tocsc()
         elapsed = time.perf_counter() - t0
         print(
             f"    [{country}] index: {len(names):,} vectors, "
@@ -166,17 +167,35 @@ class CountryIndex:
         X_q = self.vec.transform(names_batch)
         X_q = sk_normalize(X_q, norm="l2", copy=False)
 
-        # (batch × pool) similarity matrix — stays sparse-friendly via CSR
-        sims: np.ndarray = (X_q @ self.X.T).toarray()  # shape: (batch, pool)
-        top_k_idx = np.argpartition(-sims, actual_k, axis=1)[:, :actual_k]
-
         results: List[List[str]] = []
-        for i, idx in enumerate(top_k_idx):
-            row_sims = sims[i, idx]
-            # Sort by descending similarity
-            order = np.argsort(-row_sims)
-            sorted_idx = idx[order]
-            results.append(self.entity_ids[sorted_idx].tolist())
+        mini_batch_size = 2000
+        n_queries = X_q.shape[0]
+
+        for start in range(0, n_queries, mini_batch_size):
+            X_sub = X_q[start : start + mini_batch_size]
+            sims = X_sub @ self.X_T  # CSR matrix (batch x pool)
+            indptr = sims.indptr
+            indices = sims.indices
+            data = sims.data
+
+            for i in range(sims.shape[0]):
+                r_start = indptr[i]
+                r_end = indptr[i + 1]
+                if r_start == r_end:
+                    results.append([])
+                    continue
+                row_cols = indices[r_start:r_end]
+                row_vals = data[r_start:r_end]
+
+                if len(row_vals) <= actual_k:
+                    order = np.argsort(-row_vals)
+                    results.append(self.entity_ids[row_cols[order]].tolist())
+                else:
+                    top_part = np.argpartition(-row_vals, actual_k)[:actual_k]
+                    part_vals = row_vals[top_part]
+                    order = np.argsort(-part_vals)
+                    results.append(self.entity_ids[row_cols[top_part[order]]].tolist())
+            del sims
         return results
 
 
@@ -270,18 +289,6 @@ def _run_blocking(
             processed += len(batch)
             if processed % 50_000 == 0 or processed == total:
                 print(f"    Processed {processed:>7,} / {total:,} S1 entities …", flush=True)
-
-    # RapidFuzz fallback for zero-candidate entities
-    zero_cand_ids = [eid for eid, v in candidates.items() if not v]
-    if zero_cand_ids:
-        print(f"  RapidFuzz fallback for {len(zero_cand_ids):,} zero-candidate entities …", flush=True)
-        zero_rows = s1_df.set_index("entity_id").loc[zero_cand_ids].reset_index()
-        for _, row in zero_rows.iterrows():
-            country_str = str(row["country"])
-            country_pool = pool_by_country.get(country_str, pool_df)
-            candidates[row["entity_id"]] = _fuzzy_fallback(
-                row["norm_name"], country_pool, k
-            )
 
     return candidates
 
@@ -423,11 +430,14 @@ def main() -> None:
         print(f"\n  Building per-country TF-IDF indices …")
         country_indices = build_country_indices(pool_df)
 
-        # Build global fallback index (used when S1 country not in pool)
-        print(f"  Building global fallback index …")
+        # Build global fallback index only if needed (when an S1 country is missing from country_indices)
+        missing_countries = set(s1_df["country"].unique()) - set(country_indices.keys())
         global_index: Optional[CountryIndex] = None
-        if pool_df is not None and not pool_df.empty:
+        if missing_countries:
+            print(f"  Building global fallback index for missing countries {missing_countries} …")
             global_index = CountryIndex("__global__", pool_df)
+        else:
+            print("  All S1 countries present in pool indices; skipping global fallback index.")
 
         # ---- Recall gate loop ----
         k = k_start
