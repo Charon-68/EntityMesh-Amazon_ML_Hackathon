@@ -1,0 +1,21 @@
+# Business Entity Resolution — Dependencies
+# Pinned to exact versions used during development and testing.
+# Install with: pip install -r requirements.txt
+
+# ── Core data / ML ────────────────────────────────────────────────────────
+pandas==3.0.6
+numpy==2.4.6
+scikit-learn==1.9.1
+scipy==1.17.1
+
+# ── Gradient boosting classifier ──────────────────────────────────────────
+lightgbm==4.7.0
+
+# ── String similarity (blocking fallback + feature extraction) ────────────
+rapidfuzz==3.14.6
+
+# ── Model serialisation ───────────────────────────────────────────────────
+joblib==1.6.0
+
+# ── Standard library only (no extra deps needed) ─────────────────────────
+# unicodedata, csv, re, argparse, subprocess, pathlib, collections — all stdlib
